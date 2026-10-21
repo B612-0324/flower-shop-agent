@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flower-shop-agent"
+version = "1.0.0"
+description = "花店多 Agent 协作运营模拟系统"
+requires-python = ">=3.8"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+flower-shop = "flower_shop.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
