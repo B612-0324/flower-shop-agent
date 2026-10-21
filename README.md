@@ -1,77 +1,100 @@
-# 花店多 Agent 协作运营模拟系统
+# 花店多 Agent 协作运营模拟系统 v2.0
 
-一个工程化的多 Agent 协作模拟项目：用 6 个自治 Agent 模拟一家实体花店从接单、审批、出库、制作、配送到日终盘点、补货、出报表的完整运营闭环。
+一个基于**发布-订阅消息总线 + 共享黑板**的多 Agent 协作模拟系统，模拟一家实体花店
+连续 N 天的完整运营：接单、审批、出库、制作、配送、收款、日终盘点、花材报损、
+自动补货、出报表。
 
-## 一、项目结构
+零第三方依赖，Python 3.8+ 标准库即可运行。
+
+## 快速开始
+
+```bash
+python main.py                  # 默认模拟 7 天
+python main.py --days 14        # 模拟 14 天
+python main.py --seed 42        # 固定随机种子，结果可复现
+python main.py --no-dashboard   # 不生成 HTML 仪表盘
+```
+
+运行后打开 `data/dashboard.html` 即可看到可视化运营仪表盘。
+
+## 七个 Agent
+
+| Agent | 职责 |
+|---|---|
+| 销售Agent | 接待客户、计价（花材费+包装+配送+加急×VIP折扣）、创建订单 |
+| 店长Agent | 审批订单、校验库存、金额特批、生成日报 |
+| 库存Agent | 锁料出库、花材鲜度扣减与报损、低库存预警 |
+| 采购Agent | 响应补货预警、按资金约束（保留1000元周转金）采购入库 |
+| 花艺师Agent | 制作花束，加急单更快 |
+| 配送Agent | 上门配送/到店自提、收款入账 |
+| 市场Agent | 分析高价值客户、提醒回访、随机促销 |
+
+## 架构
+
+```
+客户下单
+  └─> 销售Agent: 发布 ORDER_RECEIVED
+        └─> 店长Agent: 校验库存 → 发布 INVENTORY_CHECK_REQUEST
+              └─> 库存Agent: 二次校验 + 扣库存 → 发布 MAKING_REQUEST
+                    └─> 花艺师Agent: 制作 → 发布 DELIVERY_REQUEST
+                          └─> 配送Agent: 配送 + 入账
+日终: DAILY_REPORT_REQUEST
+  ├─> 库存Agent: 花材报损 + 低库存预警 → LOW_STOCK_WARNING
+  │     └─> 采购Agent: 资金够就进货
+  ├─> 市场Agent: VIP 回访提醒
+  └─> 店长Agent: 打印日报
+```
+
+## 项目结构
 
 ```
 flower_shop_project/
+├── main.py                  # 入口（CLI 参数解析 + 装配 Agent）
 ├── config/
-│   └── shop_config.json          # 价格、库存、VIP 折扣等配置
-├── data/                          # 运行时生成：SQLite + CSV
+│   └── shop_config.json      # 价目表/费用/VIP折扣/安全库存（外置配置）
+├── core/
+│   ├── enums.py              # 订单状态机 / 花材品类 / 事件类型
+│   ├── message_bus.py        # 发布-订阅消息总线
+│   ├── shop_state.py         # 共享黑板（库存/订单/账务）
+│   └── logger.py             # 统一日志（控制台 + 文件）
+├── agents/
+│   ├── base_agent.py
+│   ├── sales_agent.py
+│   ├── shop_manager_agent.py
+│   ├── inventory_agent.py
+│   ├── purchasing_agent.py
+│   ├── florist_agent.py
+│   ├── delivery_agent.py
+│   └── marketing_agent.py     # v2.0 新增
+├── visualization/
+│   └── generate_dashboard.py  # 生成 HTML 仪表盘
+├── tests/
+│   └── test_smoke.py         # 冒烟测试
 ├── docs/
-│   ├── architecture.md            # 架构说明
-│   └── runbook.md                  # 运维手册
-├── logs/                          # 运行日志
-├── src/flower_shop/
-│   ├── core/                      # 领域层：枚举、事件、模型、状态
-│   ├── agents/                    # 6 个岗位 Agent
-│   ├── services/                  # 日志、配置、持久化、报表
-│   ├── simulation.py               # 模拟编排器
-│   └── cli.py                     # 命令行入口
-├── tests/                         # pytest 单元测试
-├── pyproject.toml
-└── requirements.txt
+│   └── architecture.md
+└── data/                     # 运行后自动生成
+    ├── orders.csv            #   订单流水
+    ├── shop.db               #   SQLite 持久化
+    ├── simulation.log         #   运行日志
+    └── dashboard.html         #   可视化仪表盘
 ```
 
-## 二、快速开始
+## v2.0 新特性
 
-```bash
-# 1. 进入项目目录
-cd flower_shop_project
+- **配置外置**：价目表、费用、VIP折扣全部在 `config/shop_config.json`，改数字不用动代码
+- **统一日志**：`logging` 模块，同时输出控制台和 `data/simulation.log`
+- **SQLite 持久化**：订单和库存写入 `data/shop.db`，程序重启不丢
+- **订单时间线**：每笔订单记录经过哪些 Agent、何时、做了什么
+- **花材保鲜模型**：每枝花有 shelf_life，每天鲜度-1，到 0 自动报损
+- **VIP 复购**：VIP 越高当天复购概率越大
+- **CLI 完善**：`--days`、`--seed`、`--db`、`--no-dashboard`
+- **市场Agent**：分析高价值客户，提醒老板回访
 
-# 2. 把 src 加到 Python 路径（或 pip install -e .）
-export PYTHONPATH=src
+## 实测数据（7 天模拟，seed=42）
 
-# 3. 跑 3 天模拟
-python -m flower_shop.cli --days 3
-
-# 4. 跑测试
-pip install pytest
-pytest tests/ -v
-```
-
-## 三、命令行参数
-
-| 参数 | 默认值 | 说明 |
-|---|---|---|
-| `--days` | 3 | 模拟天数 |
-| `--config` | config/shop_config.json | 配置文件 |
-| `--db` | data/shop.db | SQLite 路径 |
-| `--seed` | 42 | 随机种子（可复现） |
-
-## 四、Agent 角色
-
-| Agent | 职责 | 订阅事件 |
-|---|---|---|
-| SalesAgent | 接单、计价、VIP 折扣 | — |
-| ShopManagerAgent | 订单审批、库存校验 | ORDER_RECEIVED |
-| InventoryAgent | 锁料出库、报损、预警 | INVENTORY_CHECK_REQUEST / DAILY_REPORT_REQUEST |
-| PurchasingAgent | 按资金约束补货 | LOW_STOCK_WARNING |
-| FloristAgent | 制作花束 | MAKING_REQUEST |
-| DeliveryAgent | 配送/自提、收款 | DELIVERY_REQUEST |
-
-## 五、核心设计
-
-- **事件驱动**：Agent 之间通过 `MessageBus` 发布订阅通信，不直接调用
-- **共享黑板**：所有状态（库存、订单、钱）放在 `ShopState`，全局可见
-- **配置外置**：所有价格、库存、折扣在 `config/shop_config.json`
-- **持久化**：订单流水与每日库存快照写入 SQLite，可重复查询
-- **可观测**：`logs/flower_shop.log` 全量日志，`data/orders.csv` 可直接 Excel 打开
-
-## 六、扩展方向
-
-1. 把店长 / 花艺师 Agent 的规则替换为 LLM 调用
-2. 加 Web 仪表盘（Flask + 前端）实时展示库存曲线
-3. 用时间序列模型预测次日销量，提前采购
-4. 多店场景：引入总部 Agent 跨店调拨
+- 总订单：41 笔（完成 32 / 拒绝 9）
+- 营收：¥4954.85
+- 成本：¥4147.90
+- 利润：¥806.95（毛利率 16.3%）
+- 自动补货：2 次（玫瑰、郁金香）
+- 花材报损：郁金香 12 枝

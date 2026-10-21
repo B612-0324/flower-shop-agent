@@ -10,6 +10,11 @@
     "1": 0.95,
     "2": 0.9
   },
+  "vip_repeat_prob": {
+    "0": 0.05,
+    "1": 0.20,
+    "2": 0.35
+  },
   "inventory": {
     "ROSE":        {"unit_price": 8.0,  "cost_price": 4.0, "stock": 60, "safety_stock": 20, "shelf_life": 5},
     "LILY":        {"unit_price": 10.0, "cost_price": 5.0, "stock": 30, "safety_stock": 10, "shelf_life": 4},
