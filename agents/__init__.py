@@ -1,3 +1,7 @@
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'src'))
+
 from .base_agent import BaseAgent
 from .sales_agent import SalesAgent
 from .shop_manager_agent import ShopManagerAgent

@@ -23,7 +23,7 @@ class ReportService:
 
         lines = [
             "=" * 60,
-            f"  第 {s.day} 日营业日报",
+            f"  截至第 {s.day} 日累计运营报表（当日数据见daily_metrics）",
             "=" * 60,
             f"  营收：{s.revenue:>10.2f} 元   成本：{s.total_cost:>10.2f} 元",
             f"  利润：{profit:>10.2f} 元   毛利率：{margin:.1f}%",
@@ -50,6 +50,7 @@ class ReportService:
 
     def export_orders_csv(self, path: str | Path | None = None) -> Path:
         path = Path(path) if path else self.csv_dir / "orders.csv"
+        path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f)
             w.writerow(["单号", "日期", "客户", "VIP", "花材", "金额", "成本", "状态", "备注"])

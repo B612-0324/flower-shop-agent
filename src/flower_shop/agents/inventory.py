@@ -16,23 +16,27 @@ class InventoryAgent(BaseAgent):
 
     def _on_check(self, msg: Message) -> None:
         order = self.state.get_order(msg.payload["order_id"])
-        if order is None:
+        if order is None or order.status != OrderStatus.CONFIRMED:
             return
         if not self.state.check_materials(order.items):
-            order.status = OrderStatus.REFUSED
+            self.state.transition(order, OrderStatus.CONFIRMED, OrderStatus.REFUSED, self.name)
             order.refuse_reason = "出库前校验失败"
             self.state.refuse_stats["出库前校验失败"] = \
                 self.state.refuse_stats.get("出库前校验失败", 0) + 1
             self.log.warning("订单 %s 二次校验失败", order.order_id)
             return
         self.state.deduct_materials(order.items)
-        order.status = OrderStatus.MATERIAL_READY
+        self.state.transition(order, OrderStatus.CONFIRMED, OrderStatus.MATERIAL_READY, self.name)
         self.log.info("订单 %s 物料已出库", order.order_id)
         self.bus.publish(Message(
             EventType.MAKING_REQUEST, self.name, {"order_id": order.order_id},
         ))
 
     def _on_eod(self, msg: Message) -> None:
+        day = msg.payload["day"]
+        if day in self.state.closed_days:
+            return
+        self.state.closed_days.add(day)
         for ftype, item in self.state.inventory.items():
             spoiled = item.age_one_day()
             if spoiled > 0:

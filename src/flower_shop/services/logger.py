@@ -10,8 +10,10 @@ def setup_logger(log_dir: str = "logs", level: int = logging.INFO) -> logging.Lo
     os.makedirs(log_dir, exist_ok=True)
     logger = logging.getLogger("flower_shop")
     logger.setLevel(level)
-    if logger.handlers:
-        return logger
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+        handler.close()
+    logger.propagate = False
 
     fmt = logging.Formatter(
         "%(asctime)s [%(name)s] %(levelname)s: %(message)s",

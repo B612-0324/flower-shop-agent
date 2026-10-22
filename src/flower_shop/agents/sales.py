@@ -21,6 +21,12 @@ class SalesAgent(BaseAgent):
     def place_order(self, customer: Customer, items: Dict[FlowerType, int],
                     note: str = "", is_delivery: bool = True,
                     is_urgent: bool = False) -> Order:
+        if customer.vip_level not in (0, 1, 2) or not customer.name.strip():
+            raise ValueError("客户名称或VIP等级无效")
+        if not items or any(not isinstance(k, FlowerType) or k not in self.state.inventory
+                            or type(v) is not int or v <= 0 for k, v in items.items()):
+            raise ValueError("花材必须已配置，数量必须为正整数")
+        items = dict(items)
         order_id = f"ORD-{next(self._order_seq):04d}"
         order = Order(
             order_id=order_id, customer=customer, items=items, note=note,
@@ -49,8 +55,9 @@ class SalesAgent(BaseAgent):
         order.cost = round(cost, 2)
 
         self.state.add_order(order)
+        self.state.record_event(order.order_id, self.name, "创建订单")
         self.log.info(
-            "新订单 %s：%s (VIP%d) 花材费 %.1f + 附加 %.1f × %.2f = %.2f",
+            "新订单 %s：%s (VIP%d) (花材费 %.1f + 附加 %.1f；花材折扣 %.2f) = %.2f",
             order_id, customer.name, customer.vip_level,
             flower_fee, extra, discount, order.total_price,
         )

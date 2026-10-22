@@ -1,100 +1,62 @@
-# 花店多 Agent 协作运营模拟系统 v2.0
+# 花店多Agent协作运营模拟系统 2.1
 
-一个基于**发布-订阅消息总线 + 共享黑板**的多 Agent 协作模拟系统，模拟一家实体花店
-连续 N 天的完整运营：接单、审批、出库、制作、配送、收款、日终盘点、花材报损、
-自动补货、出报表。
+七个**规则驱动Agent（非LLM）**通过进程内同步发布订阅消息总线和共享黑板协作，模拟接单、审批、批次出库、制作、配送收款、日终报损补货、客户回访建议及日报。业务运行仅使用Python标准库，不接入外部AI、云服务或外部数据库。客户为合成演示数据。
 
-零第三方依赖，Python 3.8+ 标准库即可运行。
+## 运行
 
-## 快速开始
+Python 3.10+，推荐3.13。源码方式无需安装依赖：
 
 ```bash
-python main.py                  # 默认模拟 7 天
-python main.py --days 14        # 模拟 14 天
-python main.py --seed 42        # 固定随机种子，结果可复现
-python main.py --no-dashboard   # 不生成 HTML 仪表盘
+python main.py --days 7 --seed 42 --output-dir outputs/demo_7d_seed42
+python main.py --days 14 --seed 7 --output-dir outputs/demo_14d_seed7
+python main.py --config config/shop_config.json --db shop.db --csv orders.csv --summary summary.json --dashboard dashboard.html
+python main.py --no-dashboard
 ```
 
-运行后打开 `data/dashboard.html` 即可看到可视化运营仪表盘。
+上述`python`表示本机Python解释器；托管环境请替换为解释器绝对路径。所有文件路径支持裸文件名、相对路径和绝对路径。`--days`必须为正整数，`--seed`为整数。默认7天、seed=42，默认输出`data/`。不传`--config`时使用包内默认资源；修改外置配置后应显式传`--config`。
 
-## 七个 Agent
+安装方式（建议虚拟环境，不做全局安装）：
 
-| Agent | 职责 |
+```bash
+python -m pip install .
+flower-shop --days 7 --seed 42 --output-dir data
+python -m flower_shop.cli --days 7 --seed 42
+```
+
+`main.py`、模块入口与安装控制台入口均调用`src/flower_shop/cli.py`。顶层`agents/`、`core/`、`visualization/`只保留旧导入路径适配，实际业务只有src一套；旧FlowerItem构造参数顺序有兼容适配。默认配置随wheel打包，仓库外也可运行。
+
+## 七个Agent
+
+| Agent | 规则职责 |
 |---|---|
-| 销售Agent | 接待客户、计价（花材费+包装+配送+加急×VIP折扣）、创建订单 |
-| 店长Agent | 审批订单、校验库存、金额特批、生成日报 |
-| 库存Agent | 锁料出库、花材鲜度扣减与报损、低库存预警 |
-| 采购Agent | 响应补货预警、按资金约束（保留1000元周转金）采购入库 |
-| 花艺师Agent | 制作花束，加急单更快 |
-| 配送Agent | 上门配送/到店自提、收款入账 |
-| 市场Agent | 分析高价值客户、提醒回访、随机促销 |
+| 销售 | 校验客户与花材数量，花材VIP折扣后加包装、配送、加急收费 |
+| 店长 | 校验库存，自动审批或规则特批，拒绝缺货单 |
+| 库存 | 二次校验、先到期先出FEFO、批次老化、报损、低库存预警 |
+| 采购 | 安全库存补货，保留周转金，新批次不刷新旧批次保鲜期 |
+| 花艺师 | 模拟制作时长，加急更快，不进行真实sleep等待 |
+| 配送 | 区分配送与自提，完成后一次收款与确认销售成本 |
+| 市场 | 根据已完成订单累计消费生成最高价值客户回访建议 |
 
-## 架构
+## 业务口径
 
-```
-客户下单
-  └─> 销售Agent: 发布 ORDER_RECEIVED
-        └─> 店长Agent: 校验库存 → 发布 INVENTORY_CHECK_REQUEST
-              └─> 库存Agent: 二次校验 + 扣库存 → 发布 MAKING_REQUEST
-                    └─> 花艺师Agent: 制作 → 发布 DELIVERY_REQUEST
-                          └─> 配送Agent: 配送 + 入账
-日终: DAILY_REPORT_REQUEST
-  ├─> 库存Agent: 花材报损 + 低库存预警 → LOW_STOCK_WARNING
-  │     └─> 采购Agent: 资金够就进货
-  ├─> 市场Agent: VIP 回访提醒
-  └─> 店长Agent: 打印日报
-```
+- 状态依次为PENDING → CONFIRMED → MATERIAL_READY → MAKING → READY → DELIVERING → COMPLETED；自提从READY直接完成；审批或出库失败进入REFUSED。阶段检查阻止重复消息造成重复扣料和收款。
+- 每种花材维护数量和剩余保鲜天数的批次，先到期先出；当天营业结束后老化，剩余天数到0报损，再执行补货。日终每个day只执行一次，同一天同花材补货事件幂等。
+- 采购记现金支出与库存资产，不在采购时重复计损益。销售成本在订单完成时确认，报损进入损益。利润=营收−销售成本−报损；现金=初始现金+营收−采购支出。初始库存是期初资产，不再次扣初始现金。本演示不包含租金、工资、税费或包装实际成本，利润不能视为真实净利润。
+- 每日输出为当日增量，累计汇总另存；日终先报损补货、市场分析，最后生成日报和数据库快照。
+- 使用每次Simulation独立的Random与客户、订单序号、库存深拷贝；相同配置与seed可复现。每次运行创建新ShopState/Simulation，同对象二次run明确报错。
+- SQLite每次运行生成独立run_id；订单保存真实下单day、JSON花材、日终批次快照、每日指标和顺序时间线。旧表保留，新版使用run_*表，不迁移或混合旧历史。
+- 同步单线程模型不代表分布式事务、并发锁或真实物流系统。异常处理器失败显式传播，避免静默假成功；不支持中断续跑。
 
-## 项目结构
+## 输出
 
-```
-flower_shop_project/
-├── main.py                  # 入口（CLI 参数解析 + 装配 Agent）
-├── config/
-│   └── shop_config.json      # 价目表/费用/VIP折扣/安全库存（外置配置）
-├── core/
-│   ├── enums.py              # 订单状态机 / 花材品类 / 事件类型
-│   ├── message_bus.py        # 发布-订阅消息总线
-│   ├── shop_state.py         # 共享黑板（库存/订单/账务）
-│   └── logger.py             # 统一日志（控制台 + 文件）
-├── agents/
-│   ├── base_agent.py
-│   ├── sales_agent.py
-│   ├── shop_manager_agent.py
-│   ├── inventory_agent.py
-│   ├── purchasing_agent.py
-│   ├── florist_agent.py
-│   ├── delivery_agent.py
-│   └── marketing_agent.py     # v2.0 新增
-├── visualization/
-│   └── generate_dashboard.py  # 生成 HTML 仪表盘
-├── tests/
-│   └── test_smoke.py         # 冒烟测试
-├── docs/
-│   └── architecture.md
-└── data/                     # 运行后自动生成
-    ├── orders.csv            #   订单流水
-    ├── shop.db               #   SQLite 持久化
-    ├── simulation.log         #   运行日志
-    └── dashboard.html         #   可视化仪表盘
+`summary.json`含运行标识、参数、七Agent标识、累计经营指标、每日指标、库存和产物路径；`orders.csv`为订单流水；`timeline.json`和SQLite保存协作事件；`flower_shop.log`记录实际运行。HTML仪表盘完全离线，展示每日营收趋势、当日指标、订单、库存批次和Agent时间线，所有文本经过HTML转义。
+
+## 测试与交付
+
+```bash
+python -m pip install '.[dev]'
+python -m pytest tests -v
+python -m unittest discover -s tests -p test_regression.py -v
 ```
 
-## v2.0 新特性
-
-- **配置外置**：价目表、费用、VIP折扣全部在 `config/shop_config.json`，改数字不用动代码
-- **统一日志**：`logging` 模块，同时输出控制台和 `data/simulation.log`
-- **SQLite 持久化**：订单和库存写入 `data/shop.db`，程序重启不丢
-- **订单时间线**：每笔订单记录经过哪些 Agent、何时、做了什么
-- **花材保鲜模型**：每枝花有 shelf_life，每天鲜度-1，到 0 自动报损
-- **VIP 复购**：VIP 越高当天复购概率越大
-- **CLI 完善**：`--days`、`--seed`、`--db`、`--no-dashboard`
-- **市场Agent**：分析高价值客户，提醒老板回访
-
-## 实测数据（7 天模拟，seed=42）
-
-- 总订单：41 笔（完成 32 / 拒绝 9）
-- 营收：¥4954.85
-- 成本：¥4147.90
-- 利润：¥806.95（毛利率 16.3%）
-- 自动补货：2 次（玫瑰、郁金香）
-- 花材报损：郁金香 12 枝
+`docs/validate_delivery.py`用于隔离环境全套验证：全量pytest、标准库回归、指定两组模拟、wheel构建及仓库外安装模块/控制台入口运行。参见`docs/test_report.md`和`outputs/logs/`的实际记录。`outputs/summary.json`为交付总索引，演示目录有各自summary与仪表盘。完整项目zip不含.git、缓存、venv或真实个人资料。

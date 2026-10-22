@@ -15,13 +15,13 @@ class DeliveryAgent(BaseAgent):
 
     def _on_deliver(self, msg: Message) -> None:
         order = self.state.get_order(msg.payload["order_id"])
-        if order is None:
+        if order is None or order.status != OrderStatus.READY:
             return
         if order.is_delivery:
-            order.status = OrderStatus.DELIVERING
+            self.state.transition(order, OrderStatus.READY, OrderStatus.DELIVERING, self.name)
             self.log.info("订单 %s 骑手取件，送往 %s", order.order_id, order.customer.name)
         else:
             self.log.info("订单 %s 到店自提", order.order_id)
-        order.status = OrderStatus.COMPLETED
+        self.state.transition(order, order.status, OrderStatus.COMPLETED, self.name)
         self.state.settle_order(order)
         self.log.info("订单 %s 收款 %.2f 元", order.order_id, order.total_price)

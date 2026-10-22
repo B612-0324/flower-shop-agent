@@ -1,76 +1,78 @@
-"""SQLite 持久化：订单流水、库存快照。"""
-from __future__ import annotations
-
+"""SQLite 运行隔离仓储；旧表保留，新数据使用版本化表。"""
+import json
 import sqlite3
 from pathlib import Path
-from typing import Iterable
-
-from ..core.enums import FlowerType, OrderStatus
-from ..core.models import Order
+from uuid import uuid4
+from contextlib import contextmanager
 
 
 class OrderRepository:
-    def __init__(self, db_path: str | Path = "data/shop.db") -> None:
+    def __init__(self, db_path="data/shop.db", run_id=None):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_schema()
+        self.run_id = run_id or uuid4().hex
+        with self._conn() as conn:
+            conn.executescript('''
+                CREATE TABLE IF NOT EXISTS simulation_runs (
+                    run_id TEXT PRIMARY KEY, seed INTEGER, days INTEGER);
+                CREATE TABLE IF NOT EXISTS run_orders (
+                    run_id TEXT, order_id TEXT, day INTEGER, customer TEXT,
+                    vip_level INTEGER, items_json TEXT, total_price REAL,
+                    cost REAL, status TEXT, refuse_reason TEXT, note TEXT,
+                    PRIMARY KEY(run_id, order_id));
+                CREATE TABLE IF NOT EXISTS run_inventory (
+                    run_id TEXT, day INTEGER, flower TEXT, stock INTEGER,
+                    freshness INTEGER, batches_json TEXT,
+                    PRIMARY KEY(run_id, day, flower));
+                CREATE TABLE IF NOT EXISTS run_daily (
+                    run_id TEXT, day INTEGER, metrics_json TEXT,
+                    PRIMARY KEY(run_id, day));
+                CREATE TABLE IF NOT EXISTS run_timeline (
+                    run_id TEXT, seq INTEGER, day INTEGER, order_id TEXT,
+                    agent TEXT, action TEXT, PRIMARY KEY(run_id, seq));
+            ''')
 
-    def _conn(self) -> sqlite3.Connection:
+    @contextmanager
+    def _conn(self):
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
-    def _init_schema(self) -> None:
+    def start_run(self, seed, days):
         with self._conn() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS orders (
-                    order_id      TEXT PRIMARY KEY,
-                    day           INTEGER NOT NULL,
-                    customer      TEXT NOT NULL,
-                    vip_level     INTEGER NOT NULL,
-                    items_json    TEXT NOT NULL,
-                    total_price   REAL NOT NULL,
-                    cost          REAL NOT NULL,
-                    status        TEXT NOT NULL,
-                    refuse_reason TEXT DEFAULT '',
-                    note          TEXT DEFAULT ''
-                );
-                CREATE TABLE IF NOT EXISTS inventory_snapshot (
-                    day        INTEGER NOT NULL,
-                    flower     TEXT NOT NULL,
-                    stock      INTEGER NOT NULL,
-                    freshness  INTEGER NOT NULL,
-                    PRIMARY KEY (day, flower)
-                );
-                """
-            )
+            conn.execute("INSERT INTO simulation_runs VALUES (?,?,?)",
+                         (self.run_id, seed, days))
 
-    def save_order(self, order: Order) -> None:
-        items = ";".join(f"{k.value}:{v}" for k, v in order.items.items())
+    def save_order(self, order):
         with self._conn() as conn:
-            conn.execute(
-                """INSERT OR REPLACE INTO orders
-                   (order_id, day, customer, vip_level, items_json,
-                    total_price, cost, status, refuse_reason, note)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    order.order_id, order.day, order.customer.name,
-                    order.customer.vip_level, items,
-                    order.total_price, order.cost,
-                    order.status.value, order.refuse_reason, order.note,
-                ),
-            )
+            conn.execute("INSERT OR REPLACE INTO run_orders VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                         (self.run_id, order.order_id, order.day, order.customer.name,
+                          order.customer.vip_level,
+                          json.dumps({k.value: v for k, v in order.items.items()}),
+                          order.total_price, order.cost, order.status.value,
+                          order.refuse_reason, order.note))
 
-    def save_snapshot(self, day: int, inventory: dict) -> None:
+    def save_snapshot(self, day, inventory):
         with self._conn() as conn:
-            for ftype, item in inventory.items():
-                conn.execute(
-                    """INSERT OR REPLACE INTO inventory_snapshot
-                       (day, flower, stock, freshness) VALUES (?, ?, ?, ?)""",
-                    (day, ftype.value, item.stock, item.freshness),
-                )
+            for flower, item in inventory.items():
+                conn.execute("INSERT OR REPLACE INTO run_inventory VALUES (?,?,?,?,?,?)",
+                             (self.run_id, day, flower.value, item.stock,
+                              item.freshness, json.dumps(item.batches)))
 
-    def list_orders(self) -> Iterable[sqlite3.Row]:
+    def save_daily(self, state, metrics):
+        self.save_snapshot(state.day, state.inventory)
         with self._conn() as conn:
-            return conn.execute("SELECT * FROM orders ORDER BY order_id").fetchall()
+            conn.execute("INSERT OR REPLACE INTO run_daily VALUES (?,?,?)",
+                         (self.run_id, state.day, json.dumps(metrics, ensure_ascii=False)))
+            conn.executemany("INSERT OR REPLACE INTO run_timeline VALUES (?,?,?,?,?,?)",
+                             [(self.run_id, e['seq'], e['day'], e['order_id'],
+                               e['agent'], e['action']) for e in state.timeline])
+
+    def list_orders(self):
+        with self._conn() as conn:
+            return conn.execute("SELECT * FROM run_orders WHERE run_id=? ORDER BY order_id",
+                                (self.run_id,)).fetchall()

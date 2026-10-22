@@ -19,15 +19,17 @@ class ShopManagerAgent(BaseAgent):
             self.log.error("订单 %s 不存在", msg.payload["order_id"])
             return
 
+        if order.status != OrderStatus.PENDING:
+            return
         if not self.state.check_materials(order.items):
-            order.status = OrderStatus.REFUSED
+            self.state.transition(order, OrderStatus.PENDING, OrderStatus.REFUSED, self.name)
             order.refuse_reason = "库存不足"
             self.state.refuse_stats["库存不足"] = \
                 self.state.refuse_stats.get("库存不足", 0) + 1
             self.log.info("订单 %s 拒绝：库存不足", order.order_id)
             return
 
-        order.status = OrderStatus.CONFIRMED
+        self.state.transition(order, OrderStatus.PENDING, OrderStatus.CONFIRMED, self.name)
         if order.total_price <= self.state.config.max_auto_price:
             self.log.info("订单 %s 自动放行 (%.2f)", order.order_id, order.total_price)
         else:
